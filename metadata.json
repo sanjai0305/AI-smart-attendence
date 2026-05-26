@@ -1,0 +1,6 @@
+{
+  "name": "Smart Campus AI Attendance System",
+  "description": "Enterprise-grade Smart Campus Portal featuring HOD, Advisor, and Student portals with multi-stage biometric validation, device OS security checks, geofencing, GPS logs, accessibility overrides, and detailed analytical dashboard.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
