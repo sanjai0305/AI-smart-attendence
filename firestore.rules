@@ -1,0 +1,166 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // 1. GLOBAL SAFETY NET (DEFAULT DENY ALL)
+    // ==========================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ==========================================
+    // 2. REUSABLE PRIMITIVES AND UTILITIES
+    // ==========================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isHOD() {
+      return isSignedIn() && (
+        request.auth.token.email == "hod@aiml.edu" || 
+        request.auth.token.email == "sanjaim0940r@gmail.com"
+      );
+    }
+
+    function isAdvisor() {
+      return isSignedIn() && (
+        isHOD() ||
+        request.auth.token.email == "advisor@aiml.edu" ||
+        exists(/databases/$(database)/documents/advisors/$(request.auth.uid))
+      );
+    }
+
+    // ==========================================
+    // 3. COLL-SPECIFIC SCHEMAS AND PERMISSIONS
+    // ==========================================
+
+    // ADVISORS COLLECTION
+    match /advisors/{advisorId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isHOD();
+      allow update: if (isHOD() || isOwner(advisorId)) && isValidAdvisor(request.resource.data);
+    }
+
+    function isValidAdvisor(data) {
+      return data.get('id', '') is string 
+          && data.get('name', '') is string 
+          && data.get('email', '') is string 
+          && data.get('registerNo', '') is string;
+    }
+
+    // STUDENTS COLLECTION
+    match /students/{studentId} {
+      allow read: if isSignedIn() && (isAdvisor() || isOwner(studentId) || request.auth.token.email == resource.data.get('registerNo', ''));
+      allow create, delete: if isAdvisor();
+      allow update: if isSignedIn() && isValidStudent(request.resource.data) && (
+        isAdvisor() || (
+          isOwner(studentId) && 
+          request.resource.data.get('name', '') == resource.data.get('name', '') &&
+          request.resource.data.get('registerNo', '') == resource.data.get('registerNo', '')
+        )
+      );
+    }
+
+    function isValidStudent(data) {
+      return data.get('id', '') is string 
+          && data.get('name', '') is string 
+          && data.get('registerNo', '') is string 
+          && data.get('rollNo', '') is string;
+    }
+
+    // ATTENDANCE RECORD COLLECTION
+    match /attendance/{attendanceId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidAttendance(request.resource.data) && (
+        isAdvisor() || 
+        request.resource.data.get('studentId', '') == request.auth.uid ||
+        request.resource.data.get('registerNo', '') == request.auth.token.email
+      );
+      allow update: if isAdvisor() && isValidAttendance(request.resource.data);
+      allow delete: if isHOD();
+    }
+
+    function isValidAttendance(data) {
+      return data.get('id', '') is string 
+          && data.get('studentId', '') is string 
+          && data.get('status', '') is string 
+          && data.get('date', '') is string;
+    }
+
+    // ON-DUTY (OD) REQUESTS COLLECTION
+    match /odRequests/{odRequestId} {
+      allow list, get: if isSignedIn() && (isAdvisor() || resource.data.get('studentId', '') == request.auth.uid);
+      allow create: if isSignedIn() && isValidOD(request.resource.data) && (
+        request.resource.data.get('studentId', '') == request.auth.uid || isAdvisor()
+      );
+      allow update: if isSignedIn() && isValidOD(request.resource.data) && (
+        isAdvisor() || (
+          resource.data.get('studentId', '') == request.auth.uid && 
+          resource.data.get('status', '') == "Pending" && 
+          request.resource.data.get('status', '') == "Pending"
+        )
+      );
+      allow delete: if isHOD();
+    }
+
+    function isValidOD(data) {
+      return data.get('id', '') is string 
+          && data.get('studentId', '') is string 
+          && data.get('status', '') is string;
+    }
+
+    // LEAVE REQUESTS COLLECTION
+    match /leaveRequests/{leaveRequestId} {
+      allow list, get: if isSignedIn() && (isAdvisor() || resource.data.get('studentId', '') == request.auth.uid);
+      allow create: if isSignedIn() && isValidLeave(request.resource.data) && (
+        request.resource.data.get('studentId', '') == request.auth.uid || isAdvisor()
+      );
+      allow update: if isSignedIn() && isValidLeave(request.resource.data) && (
+        isAdvisor() || (
+          resource.data.get('studentId', '') == request.auth.uid && 
+          resource.data.get('status', '') == "Pending" && 
+          request.resource.data.get('status', '') == "Pending"
+        )
+      );
+      allow delete: if isHOD();
+    }
+
+    function isValidLeave(data) {
+      return data.get('id', '') is string 
+          && data.get('studentId', '') is string 
+          && data.get('status', '') is string;
+    }
+
+    // ANNOUNCEMENTS CONNECTION
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow create: if isAdvisor() && isValidAnnouncement(request.resource.data);
+      allow update: if isAdvisor() && isValidAnnouncement(request.resource.data);
+      allow delete: if isHOD();
+    }
+
+    function isValidAnnouncement(data) {
+      return data.get('id', '') is string 
+          && data.get('title', '') is string 
+          && data.get('content', '') is string;
+    }
+
+    // AUDIT LOGS
+    match /auditLogs/{auditLogId} {
+      allow read: if isAdvisor();
+      allow create: if isSignedIn() && isValidAudit(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    function isValidAudit(data) {
+      return data.get('id', '') is string 
+          && data.get('actor', '') is string 
+          && data.get('action', '') is string;
+    }
+  }
+}

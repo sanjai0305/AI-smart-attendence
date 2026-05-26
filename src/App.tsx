@@ -22,6 +22,21 @@ import PortalAdvisor from './components/PortalAdvisor';
 import PortalStudent from './components/PortalStudent';
 import { ShieldCheck, Layers, Radio, RefreshCw, KeyRound, HardDrive, Sparkles, UserCheck, Users, HelpCircle, LogOut } from 'lucide-react';
 
+// --- Firebase Connections & SDK Primitives ---
+import { db, auth, OperationType, handleFirestoreError } from './firebase';
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  getDocs, 
+  deleteDoc, 
+  updateDoc 
+} from 'firebase/firestore';
+import { 
+  signInAnonymously, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+
 export default function App() {
   // Roles and Auth States
   const [currentUser, setCurrentUser] = useState<{
@@ -49,6 +64,111 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPass, setLoginPass] = useState('');
   const [loginRole, setLoginRole] = useState<'HOD' | 'ADVISOR' | 'STUDENT'>('STUDENT');
+
+  // --- Firebase Sync States ---
+  const [firebaseUser, setFirebaseUser] = useState<any>(null);
+  const [syncEnabled, setSyncEnabled] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+
+  // Silent anonymous sign-in on mount for frictionless rule testing
+  useEffect(() => {
+    const checkAuthAndSync = async () => {
+      try {
+        const userCredential = await signInAnonymously(auth);
+        setFirebaseUser(userCredential.user);
+        setSyncEnabled(true);
+        setSyncStatus('synced');
+        console.log("Firebase Anonymously Authorized & Synced:", userCredential.user.uid);
+      } catch (err) {
+        console.warn("Silent Firebase Auth fallback: Offline sandbox rules active.", err);
+      }
+    };
+    checkAuthAndSync();
+  }, []);
+
+  // Write operation helper in line with Pillar 3 and error guidelines
+  const syncWrite = async (collectionName: string, docId: string, data: any) => {
+    if (!auth.currentUser) return;
+    try {
+      await setDoc(doc(db, collectionName, docId), data);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `${collectionName}/${docId}`);
+    }
+  };
+
+  // Bulk push state to Firebase Firestore 
+  const pushLocalToFirestore = async () => {
+    if (!auth.currentUser) {
+      alert("Firebase integration is authorizing. Please check connection.");
+      return;
+    }
+    setSyncStatus('syncing');
+    try {
+      for (const adv of advisors) {
+        await setDoc(doc(db, 'advisors', adv.id), adv);
+      }
+      for (const stu of students) {
+        await setDoc(doc(db, 'students', stu.id), stu);
+      }
+      for (const att of attendance) {
+        await setDoc(doc(db, 'attendance', att.id), att);
+      }
+      for (const od of odRequests) {
+        await setDoc(doc(db, 'odRequests', od.id), od);
+      }
+      for (const lv of leaveRequests) {
+        await setDoc(doc(db, 'leaveRequests', lv.id), lv);
+      }
+      for (const ann of announcements) {
+        await setDoc(doc(db, 'announcements', ann.id), ann);
+      }
+      for (const log of auditLogs) {
+        await setDoc(doc(db, 'auditLogs', log.id), log);
+      }
+      setSyncStatus('synced');
+      alert("Superb! Offline state successfully uploaded & synced to Firestore DB.");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'global_bulk_push');
+    }
+  };
+
+  const syncWithFirestore = async () => {
+    setSyncStatus('syncing');
+    try {
+      const advSnap = await getDocs(collection(db, 'advisors'));
+      if (!advSnap.empty) {
+        setAdvisors(advSnap.docs.map(d => d.data() as Advisor));
+      }
+      const stuSnap = await getDocs(collection(db, 'students'));
+      if (!stuSnap.empty) {
+        setStudents(stuSnap.docs.map(d => d.data() as Student));
+      }
+      const attSnap = await getDocs(collection(db, 'attendance'));
+      if (!attSnap.empty) {
+        setAttendance(attSnap.docs.map(d => d.data() as AttendanceRecord));
+      }
+      const odSnap = await getDocs(collection(db, 'odRequests'));
+      if (!odSnap.empty) {
+        setOdRequests(odSnap.docs.map(d => d.data() as ODRequest));
+      }
+      const leaveSnap = await getDocs(collection(db, 'leaveRequests'));
+      if (!leaveSnap.empty) {
+        setLeaveRequests(leaveSnap.docs.map(d => d.data() as LeaveRequest));
+      }
+      const annSnap = await getDocs(collection(db, 'announcements'));
+      if (!annSnap.empty) {
+        setAnnouncements(annSnap.docs.map(d => d.data() as Announcement));
+      }
+      const auditSnap = await getDocs(collection(db, 'auditLogs'));
+      if (!auditSnap.empty) {
+        setAuditLogs(auditSnap.docs.map(d => d.data() as AuditLog));
+      }
+      setSyncStatus('synced');
+      alert("Success! Pulled real-time data from Firestore to local state!");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, 'global_sync_pull');
+    }
+  };
 
   // Load state from local storage or seeds
   useEffect(() => {
@@ -151,12 +271,14 @@ export default function App() {
       securityRating: rating
     };
     setAuditLogs(prev => [newLog, ...prev]);
+    syncWrite('auditLogs', newLog.id, newLog);
   };
 
   // HOD operations
   const registerNewAdvisor = (newAdv: Advisor) => {
     setAdvisors(prev => [newAdv, ...prev]);
     addAudit('HOD Operator', 'HOD', `Enrolled new Section Class Advisor: ${newAdv.name}`);
+    syncWrite('advisors', newAdv.id, newAdv);
   };
 
   const toggleAdvisorAccount = (id: string) => {
@@ -164,7 +286,9 @@ export default function App() {
       if (a.id === id) {
         const nextState = !a.isEnabled;
         addAudit('HOD Operator', 'HOD', `Coordinator status mutated for ${a.name} (Active: ${nextState})`, nextState ? 'Secure' : 'Warning');
-        return { ...a, isEnabled: nextState };
+        const updated = { ...a, isEnabled: nextState };
+        syncWrite('advisors', id, updated);
+        return updated;
       }
       return a;
     }));
@@ -185,6 +309,8 @@ export default function App() {
     };
     setAttendance(prev => [newRecord, ...prev]);
     addAudit(currentUser?.name || 'Advisor', 'ADVISOR', `Onboarded student ${newStu.name} inside sector bounds`);
+    syncWrite('students', newStu.id, newStu);
+    syncWrite('attendance', newRecord.id, newRecord);
   };
 
   const evaluateOD = (id: string, isApproved: boolean) => {
@@ -193,16 +319,21 @@ export default function App() {
         const nextStatus = isApproved ? 'Approved' : 'Rejected';
         addAudit(currentUser?.name || 'Advisor', 'ADVISOR', `Filer: OD case for ${req.studentName} flagged: ${nextStatus}`);
         
+        const updatedReq = { ...req, status: nextStatus as 'Approved' | 'Rejected' };
+        syncWrite('odRequests', id, updatedReq);
+
         // If approved, update today's student attendance log to OD
         if (isApproved) {
           setAttendance(attPrev => attPrev.map(att => {
             if (att.studentId === req.studentId && att.date === req.date) {
-              return { ...att, status: 'OD', location: 'Extramural Event Exempt' };
+              const updatedAtt = { ...att, status: 'OD' as const, location: 'Extramural Event Exempt' };
+              syncWrite('attendance', att.id, updatedAtt);
+              return updatedAtt;
             }
             return att;
           }));
         }
-        return { ...req, status: nextStatus };
+        return updatedReq;
       }
       return req;
     }));
@@ -214,16 +345,21 @@ export default function App() {
         const nextStatus = isApproved ? 'Approved' : 'Rejected';
         addAudit(currentUser?.name || 'Advisor', 'ADVISOR', `Filer: Leave application for ${req.studentName} categorized ${nextStatus}`);
         
+        const updatedReq = { ...req, status: nextStatus as 'Approved' | 'Rejected' };
+        syncWrite('leaveRequests', id, updatedReq);
+
         // If granted, update attendance to Leave
         if (isApproved) {
           setAttendance(attPrev => attPrev.map(att => {
             if (att.studentId === req.studentId) {
-              return { ...att, status: 'Leave', location: 'Excused Leave block' };
+              const updatedAtt = { ...att, status: 'Leave' as const, location: 'Excused Leave block' };
+              syncWrite('attendance', att.id, updatedAtt);
+              return updatedAtt;
             }
             return att;
           }));
         }
-        return { ...req, status: nextStatus };
+        return updatedReq;
       }
       return req;
     }));
@@ -247,6 +383,7 @@ export default function App() {
     };
     setOdRequests(prev => [newOD, ...prev]);
     addAudit(currentUser?.name || 'Student', 'STUDENT', 'Filed new extramural On-Duty Certificate check');
+    syncWrite('odRequests', newOD.id, newOD);
   };
 
   const submitLeaveForm = (reason: string, startDate: string, endDate: string) => {
@@ -262,6 +399,7 @@ export default function App() {
     };
     setLeaveRequests(prev => [newLeave, ...prev]);
     addAudit(currentUser?.name || 'Student', 'STUDENT', 'Filed sick certificate leave verification check');
+    syncWrite('leaveRequests', newLeave.id, newLeave);
   };
 
   const handleMarkPresent = (record: Omit<AttendanceRecord, 'id' | 'date'>) => {
@@ -276,17 +414,20 @@ export default function App() {
     // Remove old active placeholder and insert the verified signature attendance
     setAttendance(prev => [fullRecord, ...prev.filter(a => !(a.studentId === record.studentId && a.date === today && a.session === record.session))]);
     addAudit(record.studentName, 'STUDENT', `Executed 4-Stage Secure Face-scan Check-In (${record.session})`);
+    syncWrite('attendance', fullRecord.id, fullRecord);
   };
 
   const handleResetDevice = (studentId: string) => {
     setStudents(prev => prev.map(s => {
       if (s.id === studentId) {
         addAudit('HOD Operator', 'HOD', `Unlocked physical account bonds check for student: ${s.name}`, 'Warning');
-        return {
+        const updated = {
           ...s,
           deviceId: undefined,
           deviceModel: undefined
         };
+        syncWrite('students', studentId, updated);
+        return updated;
       }
       return s;
     }));
@@ -304,6 +445,7 @@ export default function App() {
     };
     setAnnouncements(prev => [newAnn, ...prev]);
     addAudit(currentUser?.name || 'Admin', currentUser?.role || 'HOD', `Dispatched campus emergency alert: ${title}`, priority === 'urgent' ? 'Warning' : 'Secure');
+    syncWrite('announcements', newAnn.id, newAnn);
   };
 
   const handleLogout = () => {
@@ -324,19 +466,45 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-[#f0f4ff] via-[#f9f5ff] to-[#fff1f5] text-slate-900 font-sans flex flex-col" id="applet-scope-container">
       
       {/* Dynamic Global Sandbox Control Bar for checking in the iframe */}
-      <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white py-2 px-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs border-b border-indigo-900/40 relative z-55 shadow" id="global-evaluator-handshake-bar">
-        <div className="flex items-center gap-2">
+      <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white py-2 px-4 flex flex-col md:flex-row items-center justify-between gap-3 text-xs border-b border-indigo-900/40 relative z-55 shadow" id="global-evaluator-handshake-bar">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="p-1 bg-indigo-500/10 text-indigo-400 rounded border border-indigo-400/20 font-bold tracking-widest font-mono uppercase text-[9px]">
             Demo Sandbox Controls
           </span>
           <p className="text-[11px] text-slate-300">
-            Smart Campus Portal is active. Jump between portals below to test student OD files, advisor checks, and geofences.
+            Active Project: <strong className="text-white">eighth-road-484107-e0 (us-west1)</strong>
           </p>
+          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] uppercase font-bold font-mono ${
+            syncStatus === 'synced' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-400/30' :
+            syncStatus === 'syncing' ? 'bg-amber-500/20 text-amber-400 border border-amber-400/30 animate-pulse' :
+            'bg-zinc-500/20 text-zinc-400 border border-zinc-500/30'
+          }`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${syncStatus === 'synced' ? 'bg-emerald-400' : syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : 'bg-zinc-400'}`} />
+            Firebase Live: {syncStatus}
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={pushLocalToFirestore}
+            disabled={syncStatus === 'syncing'}
+            className="px-2 py-0.5 text-[10px] bg-indigo-600/30 hover:bg-indigo-650 border border-indigo-500/30 hover:border-indigo-500 rounded font-bold cursor-pointer transition-all flex items-center gap-1 text-indigo-300 hover:text-white"
+            title="Push local data state to Firestore database collections"
+          >
+            Push to Cloud DB
+          </button>
+          
+          <button
+            onClick={syncWithFirestore}
+            disabled={syncStatus === 'syncing'}
+            className="px-2 py-0.5 text-[10px] bg-purple-600/30 hover:bg-purple-650 border border-purple-500/30 hover:border-purple-500 rounded font-bold cursor-pointer transition-all flex items-center gap-1 text-purple-300 hover:text-white"
+            title="Fetch and merge latest states from Firestore"
+          >
+            Fetch Cloud DB
+          </button>
+
           {currentUser && (
-            <span className="text-[10px] text-zinc-400 font-mono">
+            <span className="text-[10px] text-zinc-400 font-mono hidden lg:inline">
               Signed in: <strong className="text-white bg-indigo-500/25 px-2 py-0.5 rounded">{currentUser.name} ({currentUser.role})</strong>
             </span>
           )}

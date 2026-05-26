@@ -1,0 +1,163 @@
+{
+  "entities": {
+    "Advisor": {
+      "title": "Advisor",
+      "description": "Class advisor details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "registerNo": { "type": "string" },
+        "email": { "type": "string" },
+        "mobile": { "type": "string" },
+        "department": { "type": "string" },
+        "section": { "type": "string" },
+        "isEnabled": { "type": "boolean" },
+        "faceRegistered": { "type": "boolean" },
+        "fingerprintRegistered": { "type": "boolean" }
+      },
+      "required": ["id", "name", "registerNo", "email", "mobile", "department", "section", "isEnabled", "faceRegistered", "fingerprintRegistered"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student details including priority status and registry details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "registerNo": { "type": "string" },
+        "rollNo": { "type": "string" },
+        "department": { "type": "string" },
+        "section": { "type": "string" },
+        "parentMobile": { "type": "string" },
+        "parentEmail": { "type": "string" },
+        "studentPhoto": { "type": "string" },
+        "faceRegistered": { "type": "boolean" },
+        "deviceId": { "type": "string" },
+        "deviceModel": { "type": "string" },
+        "isPriorityAssisted": { "type": "boolean" },
+        "priorityCategory": { "type": "string", "enum": ["none", "children", "disability_vision", "disability_motor", "disability_hearing"] }
+      },
+      "required": ["id", "name", "registerNo", "rollNo", "department", "section", "parentMobile", "parentEmail", "studentPhoto", "faceRegistered", "isPriorityAssisted"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily verified attendance records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "registerNo": { "type": "string" },
+        "date": { "type": "string" },
+        "session": { "type": "string", "enum": ["Morning", "Afternoon"] },
+        "status": { "type": "string", "enum": ["Present", "Absent", "OD", "Leave"] },
+        "timestamp": { "type": "string" },
+        "location": { "type": "string" },
+        "gpsValid": { "type": "boolean" },
+        "deviceValid": { "type": "boolean" },
+        "faceValid": { "type": "boolean" },
+        "stageReached": { "type": "number" },
+        "priorityAccommodated": { "type": "boolean" }
+      },
+      "required": ["id", "studentId", "studentName", "registerNo", "date", "session", "status"]
+    },
+    "ODRequest": {
+      "title": "ODRequest",
+      "description": "On Duty attendance request details",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "registerNo": { "type": "string" },
+        "department": { "type": "string" },
+        "section": { "type": "string" },
+        "reason": { "type": "string" },
+        "date": { "type": "string" },
+        "proofUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] },
+        "raisedAt": { "type": "string" }
+      },
+      "required": ["id", "studentId", "studentName", "registerNo", "department", "section", "reason", "date", "proofUrl", "status", "raisedAt"]
+    },
+    "LeaveRequest": {
+      "title": "LeaveRequest",
+      "description": "Leave applications",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "reason": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] },
+        "raisedAt": { "type": "string" }
+      },
+      "required": ["id", "studentId", "studentName", "reason", "startDate", "endDate", "status", "raisedAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Disseminated news alerts and announcements",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderRole": { "type": "string", "enum": ["HOD", "ADVISOR"] },
+        "priority": { "type": "string", "enum": ["low", "medium", "high", "urgent"] },
+        "targetDept": { "type": "string" },
+        "targetSection": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "content", "senderName", "senderRole", "priority", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Access, security, and exception log records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "actor": { "type": "string" },
+        "role": { "type": "string" },
+        "action": { "type": "string" },
+        "ipAddress": { "type": "string" },
+        "securityRating": { "type": "string", "enum": ["Secure", "Warning", "Threat"] }
+      },
+      "required": ["id", "timestamp", "actor", "role", "action", "ipAddress", "securityRating"]
+    }
+  },
+  "firestore": {
+    "/advisors/{advisorId}": {
+      "schema": "Advisor",
+      "description": "Advisors collection with unique advisor records"
+    },
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "Students list including registered physical locks"
+    },
+    "/attendance/{attendanceId}": {
+      "schema": "AttendanceRecord",
+      "description": "Daily verified system sign-on attendance marks"
+    },
+    "/odRequests/{odRequestId}": {
+      "schema": "ODRequest",
+      "description": "OD requests and verification workflows"
+    },
+    "/leaveRequests/{leaveRequestId}": {
+      "schema": "LeaveRequest",
+      "description": "Student multi-day sick/casual leaves"
+    },
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Administrative urgent and general announcements"
+    },
+    "/auditLogs/{auditLogId}": {
+      "schema": "AuditLog",
+      "description": "Tamper-free audit trails"
+    }
+  }
+}
