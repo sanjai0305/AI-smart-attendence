@@ -65,10 +65,13 @@ export default function App() {
   const [loginPass, setLoginPass] = useState('');
   const [loginRole, setLoginRole] = useState<'HOD' | 'ADVISOR' | 'STUDENT'>('STUDENT');
 
-  // --- Firebase Sync States ---
+  // --- Firebase & MongoDB Sync States ---
   const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [syncEnabled, setSyncEnabled] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+
+  const [mongoStatus, setMongoStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+  const [mongoConnected, setMongoConnected] = useState<boolean>(false);
 
   // Silent anonymous sign-in on mount for frictionless rule testing
   useEffect(() => {
@@ -86,13 +89,26 @@ export default function App() {
     checkAuthAndSync();
   }, []);
 
-  // Write operation helper in line with Pillar 3 and error guidelines
+  // Write operation helper in line with Pillar 3, error guidelines, and dual Mongo-Firebase writes
   const syncWrite = async (collectionName: string, docId: string, data: any) => {
-    if (!auth.currentUser) return;
+    // 1. Dual-Write Option A: Firebase Firestore
+    if (auth.currentUser) {
+      try {
+        await setDoc(doc(db, collectionName, docId), data);
+      } catch (err) {
+        console.warn("Firestore sync write skipped/unresolved: ", err);
+      }
+    }
+
+    // 2. Dual-Write Option B: MongoDB Cluster
     try {
-      await setDoc(doc(db, collectionName, docId), data);
+      await fetch('/api/sync/write', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collectionName, docId, data })
+      });
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${collectionName}/${docId}`);
+      console.warn("MongoDB sync write skipped/unresolved: ", err);
     }
   };
 
@@ -170,15 +186,143 @@ export default function App() {
     }
   };
 
-  // Load state from local storage or seeds
+  // --- MongoDB Direct Remote Operations ---
+  const pushLocalToMongo = async () => {
+    setMongoStatus('syncing');
+    try {
+      const res = await fetch('/api/sync/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          advisors,
+          students,
+          attendance,
+          odRequests,
+          leaveRequests,
+          announcements,
+          auditLogs
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMongoStatus('synced');
+        alert("Superb! Offline data state successfully uploaded and synced to MongoDB Cluster!");
+      } else {
+        setMongoStatus('error');
+        alert("MongoDB reported error during sync: " + data.error);
+      }
+    } catch (err: any) {
+      setMongoStatus('error');
+      alert("Error sending push data to MongoDB: " + err.message);
+    }
+  };
+
+  const syncWithMongo = async () => {
+    setMongoStatus('syncing');
+    try {
+      const res = await fetch('/api/sync/pull');
+      const json = await res.json();
+      if (json.success && json.data) {
+        const d = json.data;
+        let loaded = false;
+        if (d.advisors && d.advisors.length > 0) { setAdvisors(d.advisors); loaded = true; }
+        if (d.students && d.students.length > 0) { setStudents(d.students); loaded = true; }
+        if (d.attendance && d.attendance.length > 0) { setAttendance(d.attendance); loaded = true; }
+        if (d.odRequests && d.odRequests.length > 0) { setOdRequests(d.odRequests); loaded = true; }
+        if (d.leaveRequests && d.leaveRequests.length > 0) { setLeaveRequests(d.leaveRequests); loaded = true; }
+        if (d.announcements && d.announcements.length > 0) { setAnnouncements(d.announcements); loaded = true; }
+        if (d.auditLogs && d.auditLogs.length > 0) { setAuditLogs(d.auditLogs); loaded = true; }
+        
+        if (loaded) {
+          setMongoStatus('synced');
+          setMongoConnected(true);
+          alert("Success! Pulled real-time data from MongoDB cluster to local state!");
+        } else {
+          setMongoStatus('idle');
+          alert("MongoDB was connected but contains empty databases. Feel free to trigger 'Push to MongoDB' first!");
+        }
+      } else {
+        setMongoStatus('error');
+        alert("Could not pull data from MongoDB Cluster.");
+      }
+    } catch (err: any) {
+      setMongoStatus('error');
+      alert("Exception pull syncing from MongoDB: " + err.message);
+    }
+  };
+
+  // Load state from local storage or seeds, then asynchronously connect and sync to MongoDB live
   useEffect(() => {
-    setAdvisors(localDb.get<Advisor>('advisors', SEED_ADVISORS));
-    setStudents(localDb.get<Student>('students', SEED_STUDENTS));
-    setAttendance(localDb.get<AttendanceRecord>('attendance', SEED_ATTENDANCE));
-    setOdRequests(localDb.get<ODRequest>('odRequests', SEED_OD_REQUESTS));
-    setLeaveRequests(localDb.get<LeaveRequest>('leaveRequests', SEED_LEAVE_REQUESTS));
-    setAnnouncements(localDb.get<Announcement>('announcements', SEED_ANNOUNCEMENTS));
-    setAuditLogs(localDb.get<AuditLog>('auditLogs', SEED_AUDIT_LOGS));
+    const initLocalAndMongo = async () => {
+      // 1. Initial local offline cache load
+      const initialAdvisors = localDb.get<Advisor>('advisors', SEED_ADVISORS);
+      const initialStudents = localDb.get<Student>('students', SEED_STUDENTS);
+      const initialAttendance = localDb.get<AttendanceRecord>('attendance', SEED_ATTENDANCE);
+      const initialOdRequests = localDb.get<ODRequest>('odRequests', SEED_OD_REQUESTS);
+      const initialLeaveRequests = localDb.get<LeaveRequest>('leaveRequests', SEED_LEAVE_REQUESTS);
+      const initialAnnouncements = localDb.get<Announcement>('announcements', SEED_ANNOUNCEMENTS);
+      const initialAuditLogs = localDb.get<AuditLog>('auditLogs', SEED_AUDIT_LOGS);
+
+      setAdvisors(initialAdvisors);
+      setStudents(initialStudents);
+      setAttendance(initialAttendance);
+      setOdRequests(initialOdRequests);
+      setLeaveRequests(initialLeaveRequests);
+      setAnnouncements(initialAnnouncements);
+      setAuditLogs(initialAuditLogs);
+
+      // 2. Asynchronous MongoDB live check and sync
+      try {
+        const res = await fetch('/api/db-status');
+        const status = await res.json();
+        setMongoConnected(status.connected);
+        
+        if (status.connected) {
+          setMongoStatus('synced');
+          // Try to pull MongoDB remote data if populated
+          const pullRes = await fetch('/api/sync/pull');
+          const pullJson = await pullRes.json();
+          if (pullJson.success && pullJson.data) {
+            const d = pullJson.data;
+            let loadedAny = false;
+            if (d.advisors && d.advisors.length > 0) { setAdvisors(d.advisors); loadedAny = true; }
+            if (d.students && d.students.length > 0) { setStudents(d.students); loadedAny = true; }
+            if (d.attendance && d.attendance.length > 0) { setAttendance(d.attendance); loadedAny = true; }
+            if (d.odRequests && d.odRequests.length > 0) { setOdRequests(d.odRequests); loadedAny = true; }
+            if (d.leaveRequests && d.leaveRequests.length > 0) { setLeaveRequests(d.leaveRequests); loadedAny = true; }
+            if (d.announcements && d.announcements.length > 0) { setAnnouncements(d.announcements); loadedAny = true; }
+            if (d.auditLogs && d.auditLogs.length > 0) { setAuditLogs(d.auditLogs); loadedAny = true; }
+            
+            if (loadedAny) {
+              console.log("MongoDB data pulled and loaded successfully on mount.");
+            } else {
+              // Mongo is unseeded, push the initial seed datasets silently
+              console.log("MongoDB connected but empty. Performing initial silent seed build...");
+              await fetch('/api/sync/push', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  advisors: initialAdvisors,
+                  students: initialStudents,
+                  attendance: initialAttendance,
+                  odRequests: initialOdRequests,
+                  leaveRequests: initialLeaveRequests,
+                  announcements: initialAnnouncements,
+                  auditLogs: initialAuditLogs
+                })
+              });
+            }
+          }
+        } else {
+          setMongoStatus('error');
+        }
+      } catch (err) {
+        console.warn("MongoDB direct integration offline/unconfigured on mount.", err);
+        setMongoStatus('error');
+      }
+    };
+
+    initLocalAndMongo();
   }, []);
 
   // Update localStorage when lists shift
@@ -466,7 +610,7 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-[#f0f4ff] via-[#f9f5ff] to-[#fff1f5] text-slate-900 font-sans flex flex-col" id="applet-scope-container">
       
       {/* Dynamic Global Sandbox Control Bar for checking in the iframe */}
-      <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white py-2 px-4 flex flex-col md:flex-row items-center justify-between gap-3 text-xs border-b border-indigo-900/40 relative z-55 shadow" id="global-evaluator-handshake-bar">
+      <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white py-2 px-4 flex flex-col xl:flex-row items-center justify-between gap-3 text-xs border-b border-indigo-900/40 relative z-55 shadow" id="global-evaluator-handshake-bar">
         <div className="flex flex-wrap items-center gap-2">
           <span className="p-1 bg-indigo-500/10 text-indigo-400 rounded border border-indigo-400/20 font-bold tracking-widest font-mono uppercase text-[9px]">
             Demo Sandbox Controls
@@ -480,32 +624,64 @@ export default function App() {
             'bg-zinc-500/20 text-zinc-400 border border-zinc-500/30'
           }`}>
             <span className={`h-1.5 w-1.5 rounded-full ${syncStatus === 'synced' ? 'bg-emerald-400' : syncStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : 'bg-zinc-400'}`} />
-            Firebase Live: {syncStatus}
+            Firebase: {syncStatus}
+          </span>
+          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] uppercase font-bold font-mono ${
+            mongoConnected && mongoStatus === 'synced' ? 'bg-teal-500/20 text-teal-400 border border-teal-400/30' :
+            mongoStatus === 'syncing' ? 'bg-amber-500/20 text-amber-400 border border-amber-400/30 animate-pulse' :
+            'bg-[#ef4444]/20 text-[#ef4444] border border-[#ef4444]/30'
+          }`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${mongoConnected && mongoStatus === 'synced' ? 'bg-teal-450' : mongoStatus === 'syncing' ? 'bg-amber-400 animate-pulse' : 'bg-[#ef4444]'}`} />
+            MongoDB: {mongoConnected ? 'Live' : 'Offline'}
           </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={pushLocalToFirestore}
-            disabled={syncStatus === 'syncing'}
-            className="px-2 py-0.5 text-[10px] bg-indigo-600/30 hover:bg-indigo-650 border border-indigo-500/30 hover:border-indigo-500 rounded font-bold cursor-pointer transition-all flex items-center gap-1 text-indigo-300 hover:text-white"
-            title="Push local data state to Firestore database collections"
-          >
-            Push to Cloud DB
-          </button>
-          
-          <button
-            onClick={syncWithFirestore}
-            disabled={syncStatus === 'syncing'}
-            className="px-2 py-0.5 text-[10px] bg-purple-600/30 hover:bg-purple-650 border border-purple-500/30 hover:border-purple-500 rounded font-bold cursor-pointer transition-all flex items-center gap-1 text-purple-300 hover:text-white"
-            title="Fetch and merge latest states from Firestore"
-          >
-            Fetch Cloud DB
-          </button>
+          {/* Firestore Synchronizers */}
+          <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg p-0.5">
+            <span className="text-[9px] uppercase font-black font-mono text-zinc-400 px-1.5">Firestore:</span>
+            <button
+              onClick={pushLocalToFirestore}
+              disabled={syncStatus === 'syncing'}
+              className="px-2 py-0.5 text-[10px] bg-indigo-600/30 hover:bg-indigo-650 border border-indigo-500/30 hover:border-indigo-500 rounded font-bold cursor-pointer transition-all text-indigo-300 hover:text-white"
+              title="Push local data state to Firestore database collections"
+            >
+              Push
+            </button>
+            <button
+              onClick={syncWithFirestore}
+              disabled={syncStatus === 'syncing'}
+              className="px-2 py-0.5 text-[10px] bg-purple-600/30 hover:bg-purple-650 border border-purple-500/30 hover:border-purple-500 rounded font-bold cursor-pointer transition-all text-purple-300 hover:text-white"
+              title="Fetch and merge latest states from Firestore"
+            >
+              Fetch
+            </button>
+          </div>
+
+          {/* MongoDB Synchronizers */}
+          <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg p-0.5">
+            <span className="text-[9px] uppercase font-black font-mono text-emerald-405 px-1.5">MongoDB:</span>
+            <button
+              onClick={pushLocalToMongo}
+              disabled={mongoStatus === 'syncing'}
+              className="px-2 py-0.5 text-[10px] bg-teal-600/30 hover:bg-teal-650 border border-teal-500/30 hover:border-teal-500 rounded font-bold cursor-pointer transition-all text-teal-300 hover:text-white"
+              title="Upload current local state list values to MongoDB Cloud Atlas Cluster"
+            >
+              Push DB
+            </button>
+            <button
+              onClick={syncWithMongo}
+              disabled={mongoStatus === 'syncing'}
+              className="px-2 py-0.5 text-[10px] bg-emerald-600/30 hover:bg-emerald-650 border border-emerald-500/30 hover:border-emerald-500 rounded font-bold cursor-pointer transition-all text-emerald-300 hover:text-white"
+              title="Fetch latest collection documents from MongoDB live database cluster"
+            >
+              Fetch DB
+            </button>
+          </div>
 
           {currentUser && (
             <span className="text-[10px] text-zinc-400 font-mono hidden lg:inline">
-              Signed in: <strong className="text-white bg-indigo-500/25 px-2 py-0.5 rounded">{currentUser.name} ({currentUser.role})</strong>
+              User: <strong className="text-white bg-indigo-500/25 px-2 py-0.5 rounded">{currentUser.name}</strong>
             </span>
           )}
 
